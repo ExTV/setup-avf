@@ -26,7 +26,7 @@ success() { echo -e "${GREEN}✅ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠  $*${NC}"; }
 die()     { echo -e "${RED}❌ $*${NC}" >&2; exit 1; }
 step()    { echo -e "\n${BOLD}${BLUE}━━━ $* ━━━${NC}"; }
-ask()     { read -rp "$(echo -e "${CYAN}❓ $1 [y/N]: ${NC}")" _ans; [[ "$_ans" =~ ^[Yy]$ ]]; }
+ask()     { local _ans; printf "${CYAN}❓ $1 [y/N]: ${NC}" >/dev/tty; read -r _ans </dev/tty; [[ "$_ans" =~ ^[Yy]$ ]]; }
 
 # ── Trap: show last failed command ───────────────────────────
 trap 'die "Script failed at line $LINENO — check $LOG for details."' ERR
