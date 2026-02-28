@@ -1,0 +1,211 @@
+#!/bin/bash
+# ============================================================
+#  AVF VM Setup & Optimization Script — Pixel Devices
+#  Enhanced for gfxstream / virtio-gpu / Android Virt Framework
+# ============================================================
+
+set -euo pipefail
+
+# ── Colours ──────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+# ── Log file ─────────────────────────────────────────────────
+LOG="/var/log/avf_setup_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$LOG") 2>&1
+echo -e "${CYAN}📄 Logging to $LOG${NC}"
+
+# ── Helpers ──────────────────────────────────────────────────
+info()    { echo -e "${BLUE}ℹ  $*${NC}"; }
+success() { echo -e "${GREEN}✅ $*${NC}"; }
+warn()    { echo -e "${YELLOW}⚠  $*${NC}"; }
+die()     { echo -e "${RED}❌ $*${NC}" >&2; exit 1; }
+step()    { echo -e "\n${BOLD}${BLUE}━━━ $* ━━━${NC}"; }
+ask()     { read -rp "$(echo -e "${CYAN}❓ $1 [y/N]: ${NC}")" _ans; [[ "$_ans" =~ ^[Yy]$ ]]; }
+
+# ── Trap: show last failed command ───────────────────────────
+trap 'die "Script failed at line $LINENO — check $LOG for details."' ERR
+
+# ── Require root-capable sudo ────────────────────────────────
+sudo -v || die "sudo access required."
+# Keep sudo alive throughout the script
+( while true; do sudo -v; sleep 50; done ) &
+SUDO_PID=$!
+trap 'kill $SUDO_PID 2>/dev/null; exit' EXIT
+
+# ── AVF / Pixel detection (soft-warn, not hard-fail) ─────────
+echo -e "\n${BOLD}${CYAN}🚀 AVF VM Setup — Pixel Edition${NC}"
+if grep -qi "android\|crosvm\|virtio" /proc/cpuinfo 2>/dev/null ||
+   [ -e /dev/virtio-ports/com.android.microdroid.testservice ] ||
+   [ -e /sys/bus/virtio ]; then
+    success "AVF / virtio environment detected."
+else
+    warn "Could not confirm AVF environment — continuing anyway."
+fi
+
+# ════════════════════════════════════════════════════════════
+step "[1/7] DNS Configuration"
+# ════════════════════════════════════════════════════════════
+sudo chattr -i /etc/resolv.conf 2>/dev/null || true
+sudo tee /etc/resolv.conf > /dev/null <<'EOF'
+# AVF VM — locked DNS
+nameserver 8.8.8.8
+nameserver 1.1.1.1
+options timeout:2 attempts:3
+EOF
+sudo chattr +i /etc/resolv.conf
+success "DNS → Google (8.8.8.8) / Cloudflare (1.1.1.1) — locked."
+
+# ════════════════════════════════════════════════════════════
+step "[2/7] User Persistence (Linger)"
+# ════════════════════════════════════════════════════════════
+sudo loginctl enable-linger "$USER"
+success "Linger enabled for $USER."
+
+# ════════════════════════════════════════════════════════════
+step "[3/7] System Update"
+# ════════════════════════════════════════════════════════════
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -qq
+sudo apt-get full-upgrade -y -o Dpkg::Options::="--force-confdef" \
+                            -o Dpkg::Options::="--force-confold"
+sudo apt-get autoremove -y --purge
+sudo apt-get clean
+success "System fully updated."
+
+# ════════════════════════════════════════════════════════════
+step "[4/7] Remove Legacy Weston / Display Shims"
+# ════════════════════════════════════════════════════════════
+sudo apt-get remove --purge -y weston 2>/dev/null || true
+
+legacy_files=(
+    "/home/droid/weston.env"
+    "/usr/local/bin/enable_display"
+    "/usr/local/bin/enable_gfxstream"
+    "/etc/profile.d/activate_display.sh"
+    "/etc/profile.d/weston.sh"
+)
+for f in "${legacy_files[@]}"; do
+    [ -f "$f" ] && { sudo rm -v "$f"; info "Removed: $f"; }
+done
+success "Legacy graphics shims removed."
+
+# ════════════════════════════════════════════════════════════
+step "[5/7] SSH Setup"
+# ════════════════════════════════════════════════════════════
+if ask "Enable SSH on port 9922?"; then
+    sudo apt-get install -y openssh-server
+
+    SSHD=/etc/ssh/sshd_config
+    sudo cp "$SSHD" "${SSHD}.bak"
+
+    sudo sed -i \
+        -e 's/^#\?Port .*/Port 9922/' \
+        -e 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' \
+        -e 's/^#\?X11Forwarding .*/X11Forwarding yes/' \
+        -e 's/^#\?AllowTcpForwarding .*/AllowTcpForwarding yes/' \
+        "$SSHD"
+
+    sudo sshd -t || die "sshd config test failed — check $SSHD."
+    sudo systemctl enable --now ssh
+    success "SSH running on port 9922. Backup → ${SSHD}.bak"
+else
+    info "SSH skipped."
+fi
+
+# ════════════════════════════════════════════════════════════
+step "[6/7] GPU & gfxstream Environment Variables"
+# ════════════════════════════════════════════════════════════
+# Detect gfxstream ICD — fall back gracefully
+GFXSTREAM_ICD="/usr/share/vulkan/icd.d/gfxstream_vk_icd.json"
+VENUS_ICD="/usr/share/vulkan/icd.d/virtio_icd.x86_64.json"
+
+if [ -f "$GFXSTREAM_ICD" ]; then
+    VK_ICD="$GFXSTREAM_ICD"
+    info "Using gfxstream ICD."
+elif [ -f "$VENUS_ICD" ]; then
+    VK_ICD="$VENUS_ICD"
+    warn "gfxstream ICD not found — falling back to Venus (virtio-gpu)."
+else
+    VK_ICD="$GFXSTREAM_ICD"   # write path anyway; may appear post-reboot
+    warn "No Vulkan ICD found yet — writing expected gfxstream path."
+fi
+
+sudo cp /etc/environment /etc/environment.bak 2>/dev/null || true
+sudo tee /etc/environment > /dev/null <<EOF
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games"
+
+# ── AVF / gfxstream GPU ─────────────────────────────────────
+MESA_LOADER_DRIVER_OVERRIDE=zink
+VK_ICD_FILENAMES=${VK_ICD}
+
+# Zink / Kopper workarounds for AVF compositors
+MESA_VK_WSI_DEBUG=sw,linear
+XWAYLAND_NO_GLAMOR=1
+LIBGL_KOPPER_DRI2=1
+LIBGL_ALWAYS_SOFTWARE=0
+
+# Wayland socket (common AVF path)
+WAYLAND_DISPLAY=wayland-0
+XDG_RUNTIME_DIR=/run/user/$(id -u)
+
+# EGL platform for Xwayland under virtio-gpu
+__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+EOF
+
+success "GPU overrides written to /etc/environment (backup → /etc/environment.bak)."
+
+# ── Also export immediately for rest of session ───────────────
+set -a; source /etc/environment; set +a
+
+# ── Auto-detect Mesa/Vulkan packages needed ───────────────────
+MESA_PKGS=()
+dpkg -l mesa-vulkan-drivers &>/dev/null || MESA_PKGS+=(mesa-vulkan-drivers)
+dpkg -l libvulkan1         &>/dev/null || MESA_PKGS+=(libvulkan1)
+dpkg -l vulkan-tools       &>/dev/null || MESA_PKGS+=(vulkan-tools)
+
+if [ ${#MESA_PKGS[@]} -gt 0 ]; then
+    info "Installing missing Vulkan/Mesa packages: ${MESA_PKGS[*]}"
+    sudo apt-get install -y "${MESA_PKGS[@]}"
+fi
+
+# ════════════════════════════════════════════════════════════
+step "[7/7] Optional Packages"
+# ════════════════════════════════════════════════════════════
+echo ""
+echo -e "  ${CYAN}a)${NC} Podman + Distrobox + Fastfetch"
+echo -e "  ${CYAN}b)${NC} Desktop Environment (XFCE4 — lightweight, AVF-friendly)"
+echo -e "  ${CYAN}c)${NC} Wayland compositor (Sway — virtio-gpu accelerated)"
+echo -e "  ${CYAN}d)${NC} Dev tools (git, curl, wget, htop, neovim, tmux, jq)"
+echo ""
+
+if ask "Install optional packages? (select per prompt)"; then
+    ask "a) Podman + Distrobox + Fastfetch?" && \
+        sudo apt-get install -y podman distrobox fastfetch
+
+    ask "b) XFCE4 desktop?" && \
+        sudo apt-get install -y xfce4 xfce4-terminal xfce4-goodies \
+                                dbus-x11 xorg xinit
+
+    ask "c) Sway Wayland compositor?" && \
+        sudo apt-get install -y sway swaylock swaybar \
+                                foot xwayland
+
+    ask "d) Dev / CLI tools?" && \
+        sudo apt-get install -y git curl wget htop neovim tmux jq \
+                                build-essential python3-pip unzip
+else
+    info "Optional packages skipped."
+fi
+
+# ════════════════════════════════════════════════════════════
+echo -e "\n${BOLD}${GREEN}✨ Setup complete!${NC}"
+echo -e "   Log saved → ${CYAN}$LOG${NC}"
+echo ""
+echo -e "${YELLOW}Next steps:${NC}"
+echo -e "  1. ${CYAN}sudo reboot${NC}"
+echo -e "  2. After reboot, verify GPU: ${CYAN}vulkaninfo 2>/dev/null | grep 'GPU id'${NC}"
+echo -e "  3. If using XFCE: ${CYAN}startxfce4${NC}"
+echo -e "  4. If using Sway: ${CYAN}sway${NC} (requires WAYLAND_DISPLAY set)"
+echo -e "  5. SSH (if enabled): ${CYAN}ssh -p 9922 $USER@<pixel-ip>${NC}"
+echo ""
