@@ -10,6 +10,10 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
+# ── Save terminal fd before stdout/stderr are redirected to tee ──
+# In ttyd (and curl|bash) stdin may be a pipe; stderr is still the PTY.
+exec 3>&2
+
 # ── Log file ─────────────────────────────────────────────────
 _LOGNAME="avf_setup_$(date +%Y%m%d_%H%M%S).log"
 if touch "/var/log/$_LOGNAME" 2>/dev/null; then
@@ -26,7 +30,7 @@ success() { echo -e "${GREEN}✅ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠  $*${NC}"; }
 die()     { echo -e "${RED}❌ $*${NC}" >&2; exit 1; }
 step()    { echo -e "\n${BOLD}${BLUE}━━━ $* ━━━${NC}"; }
-ask()     { read -rp "$(echo -e "${CYAN}❓ $1 [y/N]: ${NC}")" _ans </dev/tty; [[ "$_ans" =~ ^[Yy]$ ]]; }
+ask()     { printf "${CYAN}❓ $1 [y/N]: ${NC}" >&3; read -r _ans <&3; [[ "$_ans" =~ ^[Yy]$ ]]; }
 
 # ── Trap: show last failed command ───────────────────────────
 trap 'die "Script failed at line $LINENO — check $LOG for details."' ERR
