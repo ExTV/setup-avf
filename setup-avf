@@ -11,7 +11,12 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 # ── Log file ─────────────────────────────────────────────────
-LOG="/var/log/avf_setup_$(date +%Y%m%d_%H%M%S).log"
+_LOGNAME="avf_setup_$(date +%Y%m%d_%H%M%S).log"
+if touch "/var/log/$_LOGNAME" 2>/dev/null; then
+    LOG="/var/log/$_LOGNAME"
+else
+    LOG="$HOME/$_LOGNAME"
+fi
 exec > >(tee -a "$LOG") 2>&1
 echo -e "${CYAN}📄 Logging to $LOG${NC}"
 
