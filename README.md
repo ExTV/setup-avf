@@ -4,7 +4,6 @@ AVF VM Setup & Optimization Script for Pixel devices running Android Virt Framew
 
 ## What it does
 
-- **DNS** — Sets Google (8.8.8.8) + Cloudflare (1.1.1.1), locks `/etc/resolv.conf`
 - **Linger** — Enables systemd user linger so services persist after logout
 - **System update** — Full `apt` upgrade, autoremove, clean
 - **Legacy cleanup** — Removes Weston and old display shims
@@ -52,4 +51,4 @@ chmod +x setup-avf
 
 ## Log
 
-Each run saves a timestamped log to `/var/log/avf_setup_<timestamp>.log`.
+Each run saves a timestamped log to `/var/log/avf_setup_<timestamp>.log` (falls back to `$HOME/` if `/var/log/` is not writable).
