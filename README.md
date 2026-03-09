@@ -23,13 +23,15 @@ AVF VM Setup & Optimization Script for Pixel devices running Android Virt Framew
 ### One-liner (curl)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ExTV/setup-avf/main/setup-avf | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/ExTV/setup-avf/main/setup-avf)
 ```
+
+> **ttyd users:** use `bash <(curl ...)` — piping via `curl ... | bash` steals stdin and breaks interactive prompts.
 
 ### Or with wget
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/ExTV/setup-avf/main/setup-avf | bash
+bash <(wget -qO- https://raw.githubusercontent.com/ExTV/setup-avf/main/setup-avf)
 ```
 
 ### Manual
