@@ -53,26 +53,13 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════
-step "[1/7] DNS Configuration"
-# ════════════════════════════════════════════════════════════
-sudo chattr -i /etc/resolv.conf 2>/dev/null || true
-sudo tee /etc/resolv.conf > /dev/null <<'EOF'
-# AVF VM — locked DNS
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-options timeout:2 attempts:3
-EOF
-sudo chattr +i /etc/resolv.conf
-success "DNS → Google (8.8.8.8) / Cloudflare (1.1.1.1) — locked."
-
-# ════════════════════════════════════════════════════════════
-step "[2/7] User Persistence (Linger)"
+step "[1/6] User Persistence (Linger)"
 # ════════════════════════════════════════════════════════════
 sudo loginctl enable-linger "$USER"
 success "Linger enabled for $USER."
 
 # ════════════════════════════════════════════════════════════
-step "[3/7] System Update"
+step "[2/6] System Update"
 # ════════════════════════════════════════════════════════════
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -qq
@@ -83,7 +70,7 @@ sudo apt-get clean
 success "System fully updated."
 
 # ════════════════════════════════════════════════════════════
-step "[4/7] Remove Legacy Weston / Display Shims"
+step "[3/6] Remove Legacy Weston / Display Shims"
 # ════════════════════════════════════════════════════════════
 sudo apt-get remove --purge -y weston 2>/dev/null || true
 
@@ -100,30 +87,30 @@ done
 success "Legacy graphics shims removed."
 
 # ════════════════════════════════════════════════════════════
-step "[5/7] SSH Setup"
+step "[4/6] SSH Setup"
 # ════════════════════════════════════════════════════════════
 if ask "Enable SSH on port 9922?"; then
     sudo apt-get install -y openssh-server
 
-    SSHD=/etc/ssh/sshd_config
-    sudo cp "$SSHD" "${SSHD}.bak"
+    # Use a drop-in config — avoids brittle sed on sshd_config
+    sudo mkdir -p /etc/ssh/sshd_config.d
+    sudo tee /etc/ssh/sshd_config.d/99-avf.conf > /dev/null <<'EOF'
+Port 9922
+PasswordAuthentication yes
+X11Forwarding yes
+AllowTcpForwarding yes
+EOF
 
-    sudo sed -i \
-        -e 's/^#\?Port .*/Port 9922/' \
-        -e 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' \
-        -e 's/^#\?X11Forwarding .*/X11Forwarding yes/' \
-        -e 's/^#\?AllowTcpForwarding .*/AllowTcpForwarding yes/' \
-        "$SSHD"
-
-    sudo sshd -t || die "sshd config test failed — check $SSHD."
-    sudo systemctl enable --now ssh
-    success "SSH running on port 9922. Backup → ${SSHD}.bak"
+    sudo sshd -t || die "sshd config test failed — check /etc/ssh/sshd_config.d/99-avf.conf"
+    sudo systemctl enable ssh
+    sudo systemctl restart ssh
+    success "SSH running on port 9922."
 else
     info "SSH skipped."
 fi
 
 # ════════════════════════════════════════════════════════════
-step "[6/7] GPU & gfxstream Environment Variables"
+step "[5/6] GPU & gfxstream Environment Variables"
 # ════════════════════════════════════════════════════════════
 # Detect gfxstream ICD — fall back gracefully
 GFXSTREAM_ICD="/usr/share/vulkan/icd.d/gfxstream_vk_icd.json"
@@ -179,7 +166,7 @@ if [ ${#MESA_PKGS[@]} -gt 0 ]; then
 fi
 
 # ════════════════════════════════════════════════════════════
-step "[7/7] Optional Packages"
+step "[6/6] Optional Packages"
 # ════════════════════════════════════════════════════════════
 echo ""
 echo -e "  ${CYAN}a)${NC} Podman + Distrobox + Fastfetch"
