@@ -10,6 +10,10 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
+# ── Save terminal fd before stdout/stderr are redirected to tee ──
+# In ttyd (and curl|bash) stdin may be a pipe; stderr is still the PTY.
+exec 3>&2
+
 # ── Log file ─────────────────────────────────────────────────
 _LOGNAME="avf_setup_$(date +%Y%m%d_%H%M%S).log"
 if touch "/var/log/$_LOGNAME" 2>/dev/null; then
@@ -26,7 +30,7 @@ success() { echo -e "${GREEN}✅ $*${NC}"; }
 warn()    { echo -e "${YELLOW}⚠  $*${NC}"; }
 die()     { echo -e "${RED}❌ $*${NC}" >&2; exit 1; }
 step()    { echo -e "\n${BOLD}${BLUE}━━━ $* ━━━${NC}"; }
-ask()     { local _ans; printf "${CYAN}❓ $1 [y/N]: ${NC}" >/dev/tty; read -r _ans </dev/tty; [[ "$_ans" =~ ^[Yy]$ ]]; }
+ask()     { printf "${CYAN}❓ $1 [y/N]: ${NC}" >&3; read -r _ans <&3; [[ "$_ans" =~ ^[Yy]$ ]]; }
 
 # ── Trap: show last failed command ───────────────────────────
 trap 'die "Script failed at line $LINENO — check $LOG for details."' ERR
@@ -49,26 +53,13 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════
-step "[1/7] DNS Configuration"
-# ════════════════════════════════════════════════════════════
-sudo chattr -i /etc/resolv.conf 2>/dev/null || true
-sudo tee /etc/resolv.conf > /dev/null <<'EOF'
-# AVF VM — locked DNS
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-options timeout:2 attempts:3
-EOF
-sudo chattr +i /etc/resolv.conf
-success "DNS → Google (8.8.8.8) / Cloudflare (1.1.1.1) — locked."
-
-# ════════════════════════════════════════════════════════════
-step "[2/7] User Persistence (Linger)"
+step "[1/6] User Persistence (Linger)"
 # ════════════════════════════════════════════════════════════
 sudo loginctl enable-linger "$USER"
 success "Linger enabled for $USER."
 
 # ════════════════════════════════════════════════════════════
-step "[3/7] System Update"
+step "[2/6] System Update"
 # ════════════════════════════════════════════════════════════
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -qq
@@ -79,7 +70,7 @@ sudo apt-get clean
 success "System fully updated."
 
 # ════════════════════════════════════════════════════════════
-step "[4/7] Remove Legacy Weston / Display Shims"
+step "[3/6] Remove Legacy Weston / Display Shims"
 # ════════════════════════════════════════════════════════════
 sudo apt-get remove --purge -y weston 2>/dev/null || true
 
@@ -96,24 +87,30 @@ done
 success "Legacy graphics shims removed."
 
 # ════════════════════════════════════════════════════════════
-step "[5/7] SSH Setup"
+step "[4/6] SSH Setup"
 # ════════════════════════════════════════════════════════════
 if ask "Enable SSH on port 9922?"; then
-    SSHD=/etc/ssh/sshd_config
-    sudo cp "$SSHD" "${SSHD}.bak"
+    sudo apt-get install -y openssh-server
 
-    sudo sed -i 's/^#\?Port .*/Port 9922/' "$SSHD"
-    sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' "$SSHD"
+    # Use a drop-in config — avoids brittle sed on sshd_config
+    sudo mkdir -p /etc/ssh/sshd_config.d
+    sudo tee /etc/ssh/sshd_config.d/99-avf.conf > /dev/null <<'EOF'
+Port 9922
+PasswordAuthentication yes
+X11Forwarding yes
+AllowTcpForwarding yes
+EOF
 
+    sudo sshd -t || die "sshd config test failed — check /etc/ssh/sshd_config.d/99-avf.conf"
     sudo systemctl enable ssh
     sudo systemctl restart ssh
-    success "SSH enabled on port 9922. Backup → ${SSHD}.bak"
+    success "SSH running on port 9922."
 else
     info "SSH skipped."
 fi
 
 # ════════════════════════════════════════════════════════════
-step "[6/7] GPU & gfxstream Environment Variables"
+step "[5/6] GPU & gfxstream Environment Variables"
 # ════════════════════════════════════════════════════════════
 # Detect gfxstream ICD — fall back gracefully
 GFXSTREAM_ICD="/usr/share/vulkan/icd.d/gfxstream_vk_icd.json"
@@ -169,7 +166,7 @@ if [ ${#MESA_PKGS[@]} -gt 0 ]; then
 fi
 
 # ════════════════════════════════════════════════════════════
-step "[7/7] Optional Packages"
+step "[6/6] Optional Packages"
 # ════════════════════════════════════════════════════════════
 echo ""
 echo -e "  ${CYAN}a)${NC} Podman + Distrobox + Fastfetch"
